@@ -16,10 +16,10 @@ flowchart LR
     end
 
     subgraph Pipeline
-        P[RAGPipeline.run()]
+        P["RAGPipeline.run()"]
         P -->|call| R[BM25Retriever]
-        R -->|SearchResult[]| RR[LLMReranker]
-        RR -->|SearchResult[]| G[AnswerGenerator]
+        R -->|"SearchResult[]"| RR[LLMReranker]
+        RR -->|"SearchResult[]"| G[AnswerGenerator]
         G -->|answer + context| P
     end
 
@@ -39,6 +39,7 @@ flowchart LR
     P -->|VerboseTracer| VT[(Tracing Logs)]
     P -->|PipelineOutput| U
 ```
+![RAG Pseudocode](slides/sa.png)
 
 ---
 

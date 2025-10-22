@@ -20,37 +20,37 @@
 
 # Slide 3 — 系統架構圖
 ```mermaid
-flowchart TD
-    subgraph User
-        UI[命令列 CLI / 未來 API]
+flowchart LR
+    subgraph User Interaction
+        U[User CLI / API] -->|問題| P
     end
 
-    subgraph Pipeline["RAGPipeline.run()"]
-        Q[法律問題] --> R1
-        R1[BM25Retriever\nlegal_rag/retriever.py]
-        R1 --> R2
-        R2[LLMReranker\nlegal_rag/ranker.py]
-        R2 --> G
-        G[AnswerGenerator\nlegal_rag/generator.py]
-        G --> OUT[PipelineOutput\n回答 + 引用]
+    subgraph Pipeline
+        P["RAGPipeline.run()"]
+        P -->|call| R[BM25Retriever]
+        R -->|"SearchResult[]"| RR[LLMReranker]
+        RR -->|"SearchResult[]"| G[AnswerGenerator]
+        G -->|answer + context| P
     end
 
-    subgraph Core Services
+    subgraph Components
         DL[data_loader.load_documents]
-        TOK[SimpleTokenizer]
-        LM[HuggingFaceLLM\nGemma-3-270M-IT]
-        TRACE[VerboseTracer]
+        T(SimpleTokenizer)
+        LM(HuggingFaceLLM\ngoogle/gemma-3-270m-it)
     end
 
-    UI --> Q
-    DL --> R1
-    TOK --> R1
-    TOK --> LM
-    LM --> R2
-    LM --> G
-    TRACE --> Pipeline
-    OUT --> UI
+    DL --> R
+    R <-->|tokenize| T
+    DL --> RR
+    RR <-->|score_relevance| LM
+    DL --> G
+    T --> LM
+    G <-->|generate| LM
+    P -->|VerboseTracer| VT[(Tracing Logs)]
+    P -->|PipelineOutput| U
 ```
+![RAG Pseudocode](sa.png)
+
 
 ---
 

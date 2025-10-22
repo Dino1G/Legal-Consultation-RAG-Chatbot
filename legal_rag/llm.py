@@ -1,6 +1,6 @@
 """
 LLM 模組：宣告 LLM 需要實作的介面，並提供 Hugging Face 模型的包裝。
-這裡採用 meta-llama/Llama-3.2-1B-Instruct 做為預設的小型語言模型。
+預設使用 google/gemma-3-270m-it 作為小型指令語言模型。
 """
 
 from __future__ import annotations  # 允許型別註解提前引用類別。
@@ -10,10 +10,7 @@ from typing import Dict, Iterable, List  # 型別註解用。
 
 import torch  # PyTorch 是 transformers 的基礎。
 from huggingface_hub import login  # 用於程式化登入 Hugging Face。
-from transformers import (  # 匯入 transformers 主要元件。
-    AutoModelForCausalLM,
-    AutoTokenizer,
-)
+from transformers import AutoModelForCausalLM, AutoTokenizer
 
 from .preprocessing import SimpleTokenizer  # 匯入 tokenizer。
 from .tracing import VerboseTracer  # 匯入 tracer 以支援 verbose 模式。
@@ -35,7 +32,7 @@ class HuggingFaceLLM(BaseLLM):
     """
     HuggingFaceLLM 類別：包裝 Hugging Face 上的指令語言模型。
 
-    - 預設使用 `meta-llama/Llama-3.2-1B-Instruct`。
+    - 預設使用 `google/gemma-3-270m-it`。
     - `score_relevance` 會將問題與候選段落分別編碼成嵌入向量，再透過餘弦相似度評分。
     - `generate` 使用 prompt template 將上下文整理後交由模型生成回覆。
     """
@@ -47,9 +44,9 @@ class HuggingFaceLLM(BaseLLM):
         hf_token: str | None = None,
         device: str | None = None,
         max_length: int = 2048,
-        max_new_tokens: int = 256,
-        temperature: float = 0.2,
-        top_p: float = 0.9,
+        max_new_tokens: int = 200,
+        temperature: float = 0.0,
+        top_p: float = 1.0,
         tracer: VerboseTracer | None = None,
     ) -> None:
         self.tracer = VerboseTracer.ensure(tracer).bind("llm.py::HuggingFaceLLM")
@@ -60,7 +57,7 @@ class HuggingFaceLLM(BaseLLM):
             login(token=hf_token, new_session=False)
 
         self.model_id = model_id
-        self.tokenizer = AutoTokenizer.from_pretrained(model_id)
+        self.tokenizer = AutoTokenizer.from_pretrained(model_id, use_fast=False)
         self.model = AutoModelForCausalLM.from_pretrained(
             model_id,
             torch_dtype=torch.float16 if torch.cuda.is_available() else torch.float32,
@@ -130,19 +127,50 @@ class HuggingFaceLLM(BaseLLM):
     # 回覆生成
     # ------------------------------------------------------------------ #
     def _build_prompt(self, question: str, snippets: List[str]) -> str:
-        """組裝系統 / 使用者 prompt。"""
-        bullet_points = "\n".join(f"- {snippet}" for snippet in snippets)
-        prompt = (
-            "你是一位熟悉台灣法規的法律助理，"
-            "請根據提供的資料回答使用者問題，並保持專業、條理分明。\n\n"
-            f"使用者問題：{question.strip()}\n\n"
-            "可參考的資料：\n"
-            f"{bullet_points}\n\n"
-            "請以繁體中文回答，包含：\n"
-            "1. 具體建議（條列式）\n"
-            "2. 相關法律依據（若資料中有提供）\n"
-            "3. 應注意事項或後續動作\n"
-            "最後提醒讀者此為一般資訊並建議諮詢律師。\n"
+        """使用 chat template 建立系統/使用者訊息。"""
+        context_text = "\n\n".join(snippets)
+        demo_user = (
+            "問題：房東遲未退還押金時可以採取哪些法律行動？\n\n"
+            "參考資料：\n"
+            "[資料] 若租賃契約期滿房東未在30日內退還押金，承租人可先行書面催告；"
+            "仍未返還時，得依民法民事訴訟請求返還並加計遲延利息。"
+        )
+        demo_assistant = (
+            "1. 先以存證信函催告房東限期返還押金，保留寄送紀錄。\n"
+            "2. 逾期未返還時，依民法民間借貸規定訴請返還押金並請求遲延利息。\n"
+            "3. 若押金涉及他項擔保，檢視契約是否另有扣抵約定。\n"
+            "此為一般資訊，建議諮詢律師。"
+        )
+        messages = [
+            {
+                "role": "system",
+                "content": (
+                    "你是一位精簡、專業且熟悉台灣法規的法律助理。"
+                    "回答必須使用繁體中文與條列式重點，禁止出現『好的』『很抱歉』等開場白，"
+                    "並且在結尾附上『此為一般資訊，建議諮詢律師。』"
+                ),
+            },
+            {
+                "role": "user",
+                "content": demo_user,
+            },
+            {
+                "role": "assistant",
+                "content": demo_assistant,
+            },
+            {
+                "role": "user",
+                "content": (
+                    f"問題：{question.strip()}\n\n"
+                    "參考資料（可引用重點，不必逐字複製）：\n"
+                    f"{context_text}"
+                ),
+            },
+        ]
+        prompt = self.tokenizer.apply_chat_template(
+            messages,
+            add_generation_prompt=True,
+            tokenize=False,
         )
         return prompt
 
@@ -172,7 +200,24 @@ class HuggingFaceLLM(BaseLLM):
                 do_sample=self.temperature > 0,
                 pad_token_id=self.tokenizer.eos_token_id,
             )
-        generated = self.tokenizer.decode(output_ids[0], skip_special_tokens=True)
-        answer = generated[len(prompt) :].strip()
+        decoded = self.tokenizer.decode(output_ids[0], skip_special_tokens=False)
+        start_tag = "<start_of_turn>model"
+        end_tag = "<end_of_turn>"
+        answer = decoded
+        start_idx = decoded.rfind(start_tag)
+        if start_idx != -1:
+            start_idx += len(start_tag)
+            end_idx = decoded.find(end_tag, start_idx)
+            if end_idx != -1:
+                answer = decoded[start_idx:end_idx].strip()
+            else:
+                answer = decoded[start_idx:].strip()
+        else:
+            # fallback：移除原 prompt 前綴
+            if decoded.startswith(prompt):
+                answer = decoded[len(prompt) :].strip()
+            else:
+                answer = decoded.strip()
+        answer = answer.removeprefix("\n").strip()
         self.tracer.log(f"generate：輸出長度={len(answer)} 字元。")
         return answer

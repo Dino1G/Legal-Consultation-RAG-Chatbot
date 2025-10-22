@@ -45,7 +45,7 @@ def build_pipeline(corpus_path: str | Path, tracer: VerboseTracer | None = None)
         hf_token=hf_token,
         tracer=tracer,
     )
-    reranker = LLMReranker(llm=hf_llm, alpha=0.4, tracer=tracer)  # 利用 Llama 模型進行語義再排序。
+    reranker = LLMReranker(llm=hf_llm, alpha=0.4, tracer=tracer)  # 利用 Gemma 模型進行語義再排序。
     generator = AnswerGenerator(llm=hf_llm, max_snippets=3, tracer=tracer)  # 生成器直接使用同一語言模型。
 
     pipeline = RAGPipeline(
